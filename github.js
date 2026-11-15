@@ -114,7 +114,7 @@
       .replace(/^\/+|\/+$/g, '');
 
     const parts = s.split('/').filter(Boolean);
-    if (parts.length < 2) return { reason: '仓库地址看不懂：' + raw.trim(), hint: '需要 owner/repo 两段，例如 R7000/starnote' };
+    if (parts.length < 2) return { reason: '仓库地址看不懂：' + raw.trim(), hint: '需要 owner/repo 两段，例如 gugullll/StarNotes' };
 
     const owner = parts[0];
     const repo = parts[1];
