@@ -1,0 +1,18 @@
+# 依赖（只有跑测试时才需要 jsdom，应用本身零依赖）
+node_modules/
+
+# 本机的项目记忆与决策日志：属于开发过程记录，不跟仓库走
+.workbuddy/
+**/.workbuddy/
+
+# 给 AI 读的工程说明（SKILL/SKILL.md）：只在本机用，不对外发布
+SKILL/
+
+# 编辑器 / 系统杂项
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.tmp

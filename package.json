@@ -1,0 +1,13 @@
+{
+  "name": "starnotes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "节点式可视化笔记：画布即文件夹，笔记即节点。零依赖、零构建，数据是本地 Markdown。",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.1"
+  }
+}

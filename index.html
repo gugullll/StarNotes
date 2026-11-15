@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StarNotes · 节点式笔记</title>
+<script>
+/* 主题必须在首屏绘制前定下来，否则会先闪一帧纸白再变深色。
+   这里只负责把上次选的写到 <html data-theme>，选择和 UI 在 theme.js 里。 */
+try {
+  var t = localStorage.getItem('starnote.theme');
+  if (t) document.documentElement.setAttribute('data-theme', t);
+} catch (e) {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="mark"></span>StarNotes</div>
+  <nav class="crumbs" id="crumbs"></nav>
+  <div class="tools">
+    <button id="btnNewNote">＋ 笔记</button>
+    <button id="btnNewCanvas">＋ 画布</button>
+    <button id="btnOpen" title="选择一个笔记目录">选择笔记目录</button>
+    <button id="btnGH" class="ghbtn" title="绑定 GitHub 仓库"><span class="gh-dot"></span><span class="gh-name">GitHub</span></button>
+    <span class="sep"></span>
+    <button id="btnTheme" class="thbtn" title="外观：换一套配色">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.1" fill="none" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 1.9a6.1 6.1 0 0 1 0 12.2z" fill="currentColor"></path></svg>
+      <span>主题</span>
+    </button>
+    <button id="btnFit">适应视图</button>
+    <span class="hidden-chip" id="hiddenChip"></span>
+  </div>
+  <div class="spacer"></div>
+  <input id="search" type="text" placeholder="搜索本层节点…" style="width:170px">
+  <div class="stats">
+    <span id="statNodes">0 节点</span>
+    <span id="statLinks">0 关联</span>
+    <span id="statZoom">100%</span>
+  </div>
+</header>
+
+<main class="stage" id="stage">
+  <div class="viewport" id="viewport">
+    <svg id="edges" width="20000" height="20000" viewBox="-10000 -10000 20000 20000">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z"></path>
+        </marker>
+        <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z"></path>
+        </marker>
+      </defs>
+      <g id="edgeLayer"></g>
+    </svg>
+    <div id="nodeLayer"></div>
+  </div>
+  <div class="empty-state" id="emptyState">
+    <div class="es-title" id="esTitle">这个库还没有画布</div>
+    <div class="es-desc" id="esDesc"></div>
+  </div>
+  <div class="hint">双击节点打开 · 点 +N 展开相邻 · Ctrl+点击多选 · Del 删除 · 双击空白处新建</div>
+</main>
+
+<!-- 多选浮条：放在 stage 外面，否则点按钮会被画布的拖动/清空选中逻辑抢走 -->
+<div class="selbar" id="selBar" hidden>
+  <span class="sb-n">已选 <b id="selCount">0</b> 项</span>
+  <span class="sb-what" id="selWhat"></span>
+  <span class="sb-sep"></span>
+  <button class="sb-del" id="selDelete" title="删除选中的笔记与画布">删除<span class="k">Del</span></button>
+  <button class="sb-clear" id="selClear" title="取消选择">取消<span class="k">Esc</span></button>
+</div>
+
+<aside class="editor" id="editor">
+  <div class="editor-head">
+    <input id="editTitle" type="text" placeholder="未命名笔记">
+    <button class="ghost" id="btnCloseEditor">关闭</button>
+  </div>
+  <div class="editor-tabs">
+    <div class="tab on" data-tab="write">编辑</div>
+    <div class="tab" data-tab="read">预览</div>
+  </div>
+  <div class="editor-body">
+    <textarea id="editBody" spellcheck="false" placeholder="用 Markdown 写点什么…"></textarea>
+    <div class="md-view" id="editPreview" style="display:none"></div>
+  </div>
+  <div class="editor-foot">
+    <span id="editMeta">—</span>
+    <span class="spacer"></span>
+    <span id="editSaved" style="color:var(--text-3)">未修改</span>
+    <button class="primary" id="btnSave">保存 ⌘S</button>
+  </div>
+</aside>
+
+<div class="ask-mask" id="askMask">
+  <div class="ask">
+    <div class="ask-title" id="askTitle">新建画布</div>
+    <input id="askInput" type="text" placeholder="输入名称">
+    <div class="ask-foot">
+      <button class="ghost" id="askCancel">取消</button>
+      <button class="primary" id="askOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="gh-mask" id="ghMask" hidden>
+  <div class="gh-card" role="dialog" aria-modal="true" aria-labelledby="ghTitle">
+    <div class="gh-head">
+      <h2 id="ghTitle">绑定 GitHub 仓库</h2>
+      <p>只读写这一个仓库。Token 保存在本机浏览器里，不会发给任何第三方。</p>
+    </div>
+
+    <div class="gh-form">
+      <label class="gh-field" for="ghRepo"><span>仓库地址</span>
+        <input id="ghRepo" type="text" placeholder="https://github.com/owner/repo 或 owner/repo" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="gh-field" for="ghBranch"><span>分支</span>
+        <input id="ghBranch" type="text" value="main" placeholder="main" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="gh-field" for="ghToken"><span>Token</span>
+        <input id="ghToken" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="gh-field" for="ghName"><span>作者名</span>
+        <input id="ghName" type="text" placeholder="提交记录里显示的名字" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="gh-field" for="ghMail"><span>邮箱</span>
+        <input id="ghMail" type="text" placeholder="you@example.com" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="gh-status" id="ghStatus" hidden></div>
+    </div>
+
+    <p class="gh-note">Token 要有 <b>Contents: Read and write</b> 权限；fine-grained token 还要把这个仓库加进 Repository access。</p>
+
+    <!-- 同步：比对 → 推送 / 拉取。显隐由 github.js 控制（只在绑定后可点） -->
+    <div class="gh-sync" id="ghSync" hidden>
+      <div class="gs-head">
+        <span class="gs-title">同步</span>
+        <span class="gs-who" id="gsWho">—</span>
+        <button class="gs-mini" id="gsRefresh" title="重新比对本地与远端">比对</button>
+      </div>
+      <div class="gs-diff" id="gsDiff"></div>
+      <label class="gs-keep" id="gsKeepRow" hidden>
+        <input type="checkbox" id="gsKeep" checked>
+        <span id="gsKeepText">首次推送：保留远端多出来的文件（不删）</span>
+      </label>
+      <!-- 提交信息：按这次改动自动生成，推送前可以改 -->
+      <div class="gs-msg" id="gsMsgRow" hidden>
+        <div class="gs-msg-head">
+          <span>提交信息</span>
+          <span class="gs-msg-tip" id="gsMsgTip">自动</span>
+          <button class="gs-mini" id="gsMsgGen" title="按这次的改动重新生成">重写</button>
+        </div>
+        <textarea id="gsMsg" rows="3" maxlength="600" spellcheck="false" placeholder="这一次改了什么"></textarea>
+      </div>
+
+      <div class="gs-acts">
+        <button class="gs-push" id="gsPush">推送 →</button>
+        <button class="gs-pull" id="gsPull">← 拉取</button>
+        <button class="gs-hist-btn" id="gsHistory" title="读这个分支的提交历史，回退到某一版">历史</button>
+        <span class="spacer"></span>
+        <button class="gs-undo" id="gsUndo" hidden title="把本地恢复成上一次覆盖之前的样子（拉取或回退都算）">恢复上一版</button>
+      </div>
+
+      <!-- 提交历史：只读远端，回退只改本地。列表由 github.js 生成 -->
+      <div class="gs-hist" id="gsHist" hidden>
+        <div class="gs-hist-head">
+          <span id="gsHistTitle">提交历史</span>
+          <span class="gs-hist-br" id="gsHistBr"></span>
+          <span class="spacer"></span>
+          <button class="gs-mini" id="gsHistReload" title="重新读取提交历史">刷新</button>
+          <button class="gs-mini" id="gsHistClose">收起</button>
+        </div>
+        <div class="gs-hist-list" id="gsHistList"></div>
+        <label class="gs-keep gs-hist-del" id="gsHistDelRow" hidden>
+          <input type="checkbox" id="gsHistDel" checked>
+          <span>这一版里没有的文件也一起删掉</span>
+        </label>
+        <div class="gs-hist-foot">
+          <span class="gs-hist-sel" id="gsHistSel"></span>
+          <span class="spacer"></span>
+          <button class="gs-restore" id="gsRestore" disabled>回退到这一版</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="gh-foot">
+      <button class="ghost" id="ghUnbind" hidden>解除绑定</button>
+      <span class="spacer"></span>
+      <button class="ghost" id="ghCancel">取消</button>
+      <button class="primary" id="ghSubmit">校验并绑定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 外观设置：卡片由 theme.js 生成（配色只在那里写一份，免得和 CSS 各写一遍） -->
+<div class="th-mask" id="thMask" hidden>
+  <div class="th-card" role="dialog" aria-modal="true" aria-labelledby="thTitle">
+    <div class="th-head">
+      <h2 id="thTitle">外观</h2>
+      <p>选一套配色。只影响这台机器上的显示，不写进笔记库，也不进 Git。</p>
+    </div>
+    <div class="th-grid" id="thGrid"></div>
+    <div class="th-foot">
+      <span class="th-note" id="thNote">点一张卡片就立刻生效，随时可以改回来。</span>
+      <span class="spacer"></span>
+      <button class="primary" id="thClose">完成</button>
+    </div>
+  </div>
+</div>
+
+<div class="ctxmenu" id="ctxmenu"></div>
+<div class="popover" id="popover"></div>
+<div class="hovercard" id="hovercard"></div>
+
+<div class="gate" id="gate" hidden>
+  <div class="gate-box">
+    <div class="gate-logo"></div>
+    <h1 id="gateTitle">先选一个文件夹</h1>
+    <p class="gate-desc" id="gateDesc"></p>
+    <ul class="gate-points" id="gatePoints">
+      <li>一个<b>文件夹 = 一块画布</b>，是上层图里的一个节点</li>
+      <li>画布可以套画布，层数不限；每层的 <b>.md</b> 是这层的笔记</li>
+      <li>关系只在本画布内有效，画布之间在上层图里连线</li>
+      <li>这个文件夹之外，程序不写任何东西</li>
+    </ul>
+    <div class="gate-actions">
+      <button class="primary big" id="gatePick">选择文件夹</button>
+      <button class="big" id="gateResume" hidden>继续使用上次的文件夹</button>
+    </div>
+    <p class="gate-note" id="gateNote"></p>
+    <!-- 闸门之上也要能换配色：深色用户第一眼就不该被白底闪到 -->
+    <button class="ghost gate-theme" id="gateTheme">换一套配色</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script src="github.js"></script>
+<script src="theme.js"></script>
+</body>
+</html>

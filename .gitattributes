@@ -1,0 +1,3 @@
+# 仓库内统一 LF。Windows 上编辑器写回 CRLF 时，git 会在提交时自动归一化，
+# 不会出现整文件换行的假 diff。工作区里的文件不受影响。
+* text=auto eol=lf
