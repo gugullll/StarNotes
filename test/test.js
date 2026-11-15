@@ -2064,6 +2064,146 @@ function nestedVault() {
     w.close();
   }
 
+  console.log('\n[27] 拖到面包屑：把节点移出到上一层/更上层');
+  {
+    const dir = fakeDir('库', {
+      'A.md': '# A\n\n甲。\n',
+      '画布X': {
+        'inner.md': '# 内部笔记\n\n里。\n',
+        // 没坐标的节点会被「未上板」藏起来，测试要按标题找元素，所以都得给出坐标
+        'StarNotes.canvas.md': '---\ntype: canvas\nversion: 2\n---\n\n- inner.md 900 640\n- 画布Y 1250 640\n',
+        '画布Y': {
+          '深笔记.md': '# 深笔记\n\n很深。\n',
+          '另一篇.md': '# 另一篇\n\n旁。\n',
+          'StarNotes.canvas.md': '---\ntype: canvas\nversion: 2\n---\n\n- 深笔记.md 900 640\n- 另一篇.md 1250 640\n',
+          // 这一层里两篇有关联，搬走一篇后关系表要跟着干净
+          'StarNotes.graph.md': '---\ntype: graph\nversion: 1\n---\n\n## 深笔记.md\n- 另一篇.md | 属于 | →\n',
+        },
+      },
+    });
+    const w = await openWith(dir);
+    const d = w.document;
+    w.HTMLElement.prototype.setPointerCapture = () => {};
+    const hint = () => d.querySelector('.hint').textContent;
+
+    const stub = (i, left, right) => {
+      const b = d.querySelectorAll('#crumbs .crumb.link')[i];
+      if (b) b.getBoundingClientRect = () => ({ left, top: 10, right, bottom: 38, width: right - left, height: 28 });
+      return b;
+    };
+    /* jsdom 没有布局，面包屑的矩形得自己造；否则命中判定永远拿不到尺寸 */
+    const dragTo = async (el, x, y) => {
+      el.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: 900, clientY: 640 }));
+      w.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: 910, clientY: 640, buttons: 1 }));
+      await sleep(15);
+      w.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: x, clientY: y, buttons: 1 }));
+      await sleep(15);
+      w.dispatchEvent(new w.MouseEvent('pointerup', { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: y }));
+      await sleep(300);
+    };
+
+    ok(d.getElementById('crumbs').querySelectorAll('.crumb.link').length === 0, '根层没有祖先，面包屑里没有可放的格子');
+
+    dbl(w, byTitle(w, '画布X'), 900, 640);
+    await sleep(120);
+    const xDir = dir.childDir('画布X');
+    const yDir = xDir && xDir.childDir('画布Y');
+    ok(!!yDir, '进到画布X，里面还有画布Y');
+    dbl(w, byTitle(w, '画布Y'), 900, 640);
+    await sleep(120);
+    ok(d.getElementById('crumbs').querySelectorAll('.crumb.link').length === 2, '进到画布Y，祖先有两格（根、画布X）');
+
+    /* ① 移出一层：拖到「画布X」那格 */
+    const xCrumb = stub(1, 130, 240);
+    ok(!!xCrumb, '找到「画布X」那格面包屑');
+    const deepEl = byTitle(w, '深笔记');
+    deepEl.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: 900, clientY: 640 }));
+    w.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: 910, clientY: 640, buttons: 1 }));
+    await sleep(15);
+    ok(d.getElementById('crumbs').classList.contains('droppable'), '拖起节点后，面包屑进入「可移出」的显形态');
+    ok(!xCrumb.classList.contains('drop-out'), '还没压上去，不点亮');
+    w.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: 180, clientY: 22, buttons: 1 }));
+    await sleep(15);
+    ok(!!xCrumb.classList.contains('drop-out'), '指针压到「画布X」那格时点亮它');
+    /* 指针在顶栏上时，底下压着的节点不算落点——两个落点不能叠加 */
+    ok(!d.querySelector('#nodeLayer .node.drop-into'), '在面包屑上时不点亮任何画布节点');
+    w.dispatchEvent(new w.MouseEvent('pointerup', { bubbles: true, button: 0, pointerId: 1, clientX: 180, clientY: 22 }));
+    await sleep(300);
+
+    ok(!yDir.has('深笔记.md'), '原层（画布Y）里的文件已搬走', [...yDir._handles.keys()].join(','));
+    ok(xDir.has('深笔记.md'), '落到「画布X」这一层了');
+    ok(!/深笔记/.test(await yDir.read('StarNotes.graph.md')), '搬走后原层关系表里不再提它',
+      await yDir.read('StarNotes.graph.md'));
+    ok(/深笔记\.md/.test(await xDir.read('StarNotes.canvas.md')), '新层里给了它一个坐标，不是「未上板」',
+      await xDir.read('StarNotes.canvas.md'));
+    ok(titled(w) === '内部笔记,深笔记,画布Y', '界面已经切到画布X，并显示搬过来的那篇', titled(w));
+    ok(d.querySelector('#nodeLayer .node.selected .node-title')?.textContent === '深笔记', '搬完自动选中它');
+    ok(/移出到「画布X」/.test(hint()), '提示写明去了哪一层', hint());
+    ok(!d.getElementById('crumbs').classList.contains('droppable'), '松手后显形态收掉');
+    ok(!d.querySelector('.drop-out'), '高亮也收掉');
+
+    /* ② 跨层：再拖一次，直接到根（跳过画布X） */
+    const rootCrumb = stub(0, 10, 120);
+    ok(!!rootCrumb, '画布X 这一层里，根那格仍是链接');
+    await dragTo(byTitle(w, '深笔记'), 60, 22);
+    ok(dir.has('深笔记.md'), '一次就能从画布Y 跨到根目录');
+    ok(!xDir.has('深笔记.md'), '中间那一层不留副本');
+    ok(d.getElementById('crumbs').querySelectorAll('.crumb.link').length === 0, '界面已经回到根层');
+    ok(titled(w) === 'A,深笔记,画布X', '根层画布上看得见它', titled(w));
+
+    /* ③ 画布节点也能整块移出（递归复制 + 删源目录） */
+    dbl(w, byTitle(w, '画布X'), 900, 640);
+    await sleep(120);
+    const rootCrumb2 = stub(0, 10, 120);
+    ok(!!rootCrumb2, '回到画布X，根那格可放');
+    await dragTo(byTitle(w, '画布Y'), 60, 22);
+    ok(dir.has('画布Y'), '整个文件夹被搬到根目录');
+    ok(!xDir.has('画布Y'), '源文件夹已删除');
+    ok(!!dir.childDir('画布Y')._handles.get('另一篇.md'), '里面的笔记一起搬过来了');
+
+    w.close();
+  }
+  {
+    /* 重名不能覆盖：目标层已经有一个同名文件时自动改名 */
+    const dir = fakeDir('库', {
+      '同名.md': '# 旧的\n\n根层这份。\n',
+      '画布X': { '同名.md': '# 新的\n\n里面这份。\n' },
+    });
+    const w = await openWith(dir);
+    const d = w.document;
+    w.HTMLElement.prototype.setPointerCapture = () => {};
+    dbl(w, byTitle(w, '画布X'), 900, 640);
+    await sleep(120);
+    const crumb = d.querySelector('#crumbs .crumb.link');
+    crumb.getBoundingClientRect = () => ({ left: 10, top: 10, right: 120, bottom: 38, width: 110, height: 28 });
+    const n = byTitle(w, '新的');
+    n.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: 900, clientY: 640 }));
+    w.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: 910, clientY: 640, buttons: 1 }));
+    await sleep(15);
+    w.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: 60, clientY: 22, buttons: 1 }));
+    await sleep(15);
+    w.dispatchEvent(new w.MouseEvent('pointerup', { bubbles: true, button: 0, pointerId: 1, clientX: 60, clientY: 22 }));
+    await sleep(300);
+
+    ok(/旧的/.test(await dir.read('同名.md')), '根层原有的同名文件没被覆盖', await dir.read('同名.md'));
+    const dup = dir._handles.get('同名 (2).md');
+    ok(!!dup, '自动改名成「同名 (2).md」');
+    ok(!!dup && /新的/.test(await dup.getFile().then((f) => f.text())), '搬过来的是里面那一份');
+
+    /* 取消拖动（系统收走指针）不能留下悬空的虚线态 */
+    const b = d.querySelector('#crumbs .crumb.link');
+    w.HTMLElement.prototype.setPointerCapture = () => {};
+    byTitle(w, '旧的')?.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: 900, clientY: 640 }));
+    w.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: 910, clientY: 640, buttons: 1 }));
+    await sleep(15);
+    w.dispatchEvent(new w.MouseEvent('pointercancel', { bubbles: true }));
+    await sleep(30);
+    ok(!d.getElementById('crumbs').classList.contains('droppable'), 'pointercancel 也把面包屑的显形态收干净');
+    ok(!d.querySelector('.node.dragging'), '节点不再处于 dragging');
+
+    w.close();
+  }
+
   console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败\n');
   process.exit(fail ? 1 : 0);
 })();

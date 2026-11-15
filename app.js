@@ -461,6 +461,40 @@ function dropHit(n) {
   return canvas;
 }
 
+/* 拖动时落在哪个面包屑上？返回层下标，没落在上面返回 -1。
+   用矩形命中而不是元素命中：拖动期间指针被 stage 捕获，
+   elementFromPoint 也能用，但矩形比对在 jsdom 里同样能测。 */
+function crumbHit(x, y) {
+  for (const b of crumbEls()) {
+    const r = b.getBoundingClientRect();
+    if (!r.width || !r.height) continue;             // 没布局（测试环境）就跳过
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return Number(b.dataset.depth);
+  }
+  return -1;
+}
+
+function crumbEls() {
+  const el = $('#crumbs');
+  if (!el || !el.querySelectorAll) return [];
+  return [...el.querySelectorAll('.crumb.link')];
+}
+
+/* 高亮「松手会移出到这一层」的那一格 */
+function markCrumbDrop(depth) {
+  for (const b of crumbEls()) b.classList.toggle('drop-out', Number(b.dataset.depth) === depth);
+}
+
+function clearCrumbDrop() {
+  markCrumbDrop(-1);
+  setCrumbsDroppable(false);
+}
+
+/* 让面包屑在拖动时显形：祖先层能接住节点，这件事只有拖起来才该提示 */
+function setCrumbsDroppable(on) {
+  const el = $('#crumbs');
+  if (el) el.classList.toggle('droppable', !!on);
+}
+
 /* 目标画布里取一个不重名的文件名，避免覆盖已有笔记 */
 async function freeNameIn(dir, name) {
   if ((await readText(dir, name)) === null) return name;
@@ -470,6 +504,21 @@ async function freeNameIn(dir, name) {
     if ((await readText(dir, cand)) === null) return cand;
   }
   return base + ' (' + Date.now() + ').md';
+}
+
+/* 文件夹版的重名规避：画布节点的名字就是文件夹名，按文件探测会漏掉同名目录 */
+async function freeDirNameIn(dir, name) {
+  const taken = async (n) => {
+    try { await dir.getDirectoryHandle(n); return true; } catch (e) { /* 没有同名目录 */ }
+    try { await dir.getFileHandle(n); return true; } catch (e) { /* 也没有同名文件 */ }
+    return false;
+  };
+  if (!(await taken(name))) return name;
+  for (let i = 2; i < 100; i++) {
+    const cand = name + ' (' + i + ')';
+    if (!(await taken(cand))) return cand;
+  }
+  return name + ' (' + Date.now() + ')';
 }
 
 /* 把节点搬进目标画布文件夹：先搬文件，再从本层摘掉它的坐标与关系 */
@@ -521,6 +570,67 @@ async function moveInto(n, target) {
   renderAll();
   renderCrumbs();
   flash('已把「' + title + '」移入画布「' + target.title + '」');
+}
+
+/* 把节点移出到上面某一层（拖到面包屑上）—— moveInto 的反方向。
+   depth 是面包屑下标，只会是「祖先」，不会是自己这一层（当前层那格不是链接）。
+   搬完跳过去并选中它：不然拖出去以后就不知道东西去哪了。 */
+async function moveOut(n, depth) {
+  const target = state.stack[depth];
+  if (!target || depth >= state.stack.length - 1) return;
+
+  const srcName = n.file || n.id;
+  const title = n.title;
+  const canvas = isCanvasNode(n);
+  const edges = degree(n);           // 这些关联只在这一层有意义，搬走就断
+  let movedName = srcName;
+
+  try {
+    if (canvas) {
+      // 浏览器没有「移动目录」：先递归复制，核对项目数再删源目录
+      const src = await state.dir.getDirectoryHandle(srcName);
+      movedName = await freeDirNameIn(target.dir, srcName);
+      const dst = await target.dir.getDirectoryHandle(movedName, { create: true });
+      const r = await copyDirInto(src, dst);
+      if (r.dst < r.src) throw new Error('只复制了 ' + r.dst + '/' + r.src + ' 项');
+      await state.dir.removeEntry(srcName, { recursive: true });
+    } else {
+      const text = await readText(state.dir, srcName);
+      if (text === null) throw new Error('读不到 ' + srcName);
+      movedName = await freeNameIn(target.dir, srcName);
+      await writeTextTo(target.dir, movedName, text);
+      await state.dir.removeEntry(srcName);
+    }
+  } catch (e) {
+    flash('移出到「' + target.name + '」失败：' + e.message);
+    renderAll();                     // 拖动改过内存坐标，失败就退回盘上的位置
+    return;
+  }
+
+  // 在那一层给它一个落点，否则跳过去是「未上板」，找不着
+  const innerText = await readMeta(target.dir, LAYOUT_FILE, LEGACY_LAYOUT_FILE);
+  const inner = innerText ? parseLayout(innerText) : new Map();
+  inner.set(movedName, freeSpotIn(inner));
+  await writeLayoutTo(target.dir, inner);
+
+  if (state.editing === n) { state.editing = null; $('#editor').classList.remove('open'); }
+  removeNodeRefs(n);                 // 本层关系、坐标、DOM 一起清掉
+  touchLayout();
+  touchGraph();
+  await flushWrites();               // 搬完立刻落盘，别等防抖
+
+  await goTo(depth);                 // loadLevel 里会 fitView，所以下面再判断可见性
+  const back = [...state.nodes.values()].find((m) => (m.file || m.id) === movedName);
+  if (back) {
+    select(back.id);
+    const r = stage.getBoundingClientRect();
+    const sx = (back.pos?.x || 0) * state.view.k + state.view.x;
+    const sy = (back.pos?.y || 0) * state.view.k + state.view.y;
+    // 落点在屏幕外才跳过去：本来就看得到的话，别把视野拽走
+    if (sx < 60 || sy < 60 || sx > r.width - 60 || sy > r.height - 60) focusOn(back);
+  }
+  flash('已把「' + title + '」移出到「' + target.name + '」' +
+    (edges ? '（原来那层的 ' + edges + ' 条关联已清除）' : ''));
 }
 
 function uniqueDirName(base) {
@@ -1377,7 +1487,7 @@ stage.addEventListener('pointerdown', (ev) => {
   }
   if (nodeHit) {
     const n = state.nodes.get(nodeHit.dataset.id);
-    drag = { type: 'node', n, sx: ev.clientX, sy: ev.clientY, ox: n.pos.x, oy: n.pos.y, moved: false };
+    drag = { type: 'node', n, sx: ev.clientX, sy: ev.clientY, ox: n.pos.x, oy: n.pos.y, moved: false, crumbDepth: -1 };
     stage.setPointerCapture(ev.pointerId);
     // 点在多选集合里的一项上：保留整组选中，方便接着批量删除
     if (!isSel(n.id)) select(n.id);
@@ -1400,7 +1510,10 @@ window.addEventListener('pointermove', (ev) => {
   if (!drag.moved && Math.hypot(dx, dy) > 3) {
     drag.moved = true;
     if (drag.type === 'pan') stage.classList.add('panning');
-    else drag.n.el?.classList.add('dragging');   // 被拖的节点关掉位置过渡，跟手
+    else {
+      drag.n.el?.classList.add('dragging');   // 被拖的节点关掉位置过渡，跟手
+      setCrumbsDroppable(true);               // 祖先层接得住它了，让面包屑显形
+    }
   }
   if (!drag.moved) return;
   if (drag.type === 'pan') {
@@ -1411,8 +1524,14 @@ window.addEventListener('pointermove', (ev) => {
     drag.n.pos.x = drag.ox + dx / state.view.k;
     drag.n.pos.y = drag.oy + dy / state.view.k;
     paintNode(drag.n);
+    // 指针在顶栏面包屑上时，底下压着什么节点都不算数——两个落点不叠加
+    const depth = crumbHit(ev.clientX, ev.clientY);
+    if (drag.crumbDepth !== depth) {
+      drag.crumbDepth = depth;
+      markCrumbDrop(depth);
+    }
     // 悬在画布节点上时把它点亮：松手就会移进去，先给个可预期
-    const hit = dropHit(drag.n);
+    const hit = depth < 0 ? dropHit(drag.n) : null;
     const tgt = hit && isCanvasNode(hit) ? hit : null;
     if (drag.dropTarget !== tgt) {
       drag.dropTarget?.el?.classList.remove('drop-into');
@@ -1425,7 +1544,7 @@ window.addEventListener('pointermove', (ev) => {
 
 window.addEventListener('pointerup', async (ev) => {
   if (state.link) { finishLink(ev); return; }
-  if (!drag) return;
+  if (!drag) { clearCrumbDrop(); return; }
   const d = drag;
   drag = null;
   stage.classList.remove('panning');
@@ -1434,7 +1553,14 @@ window.addEventListener('pointerup', async (ev) => {
   if (d.type === 'node' && d.moved) {
     d.n.el?.classList.remove('dragging');
     d.dropTarget?.el?.classList.remove('drop-into');
-    // 落点决定语义：压在画布上 = 移进去；压在笔记上（或空地）= 自己弹开
+    clearCrumbDrop();
+    // 落点决定语义：压在面包屑上 = 移出到那一层；压在画布上 = 移进去；
+    // 压在笔记上（或空地）= 自己弹开
+    const depth = crumbHit(ev.clientX, ev.clientY);
+    if (depth >= 0) {
+      await moveOut(d.n, depth);
+      return;
+    }
     const hit = dropHit(d.n);
     if (hit && isCanvasNode(hit)) {
       await moveInto(d.n, hit);
@@ -1449,6 +1575,16 @@ window.addEventListener('pointerup', async (ev) => {
     d.n.revealedBy.clear();
     touchLayout();
   }
+});
+
+/* 指针被系统收走（切窗口、触摸取消）时，把拖动留下的视觉状态清干净，
+   否则面包屑会一直挂着虚线、节点一直处于 dragging */
+window.addEventListener('pointercancel', () => {
+  drag?.n?.el?.classList.remove('dragging');
+  drag?.dropTarget?.el?.classList.remove('drop-into');
+  drag = null;
+  clearCrumbDrop();
+  stage.classList.remove('panning');
 });
 
 stage.addEventListener('wheel', (ev) => {

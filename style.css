@@ -542,6 +542,20 @@ input[type="password"]:focus { border-color: var(--accent); }
 .crumb.link { cursor: pointer; border-color: transparent; }
 .crumb.link:hover { background: var(--surface-3); border-color: transparent; color: var(--text); }
 .crumb.cur { color: var(--text); font-weight: 500; background: var(--surface-2); }
+/* 拖着节点时，祖先面包屑就是「移出到这一层」的落点：虚线先告诉你能放，
+   指针压上去再变成实心强调色。只动颜色，不动盒模型，免得命中矩形跟着抖 */
+.crumbs.droppable .crumb.link {
+  outline: 1px dashed var(--line-strong);
+  outline-offset: -1px;
+  cursor: copy;
+}
+.crumb.link.drop-out {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .crumb .cico { font-size: 11px; color: var(--text-3); line-height: 1; }
 .crumb .cico.fld { color: var(--accent); }
 .crumb .cnm {
